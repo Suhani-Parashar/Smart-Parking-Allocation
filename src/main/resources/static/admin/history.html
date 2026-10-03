@@ -1,0 +1,257 @@
+﻿<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Master parking session ledger. Full audit trail of vehicle admissions, departures, tariff calculations, and payment summaries.">
+    <meta name="color-scheme" content="light dark">
+    <title>Session History — Smart Parking Allocation System</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    
+    <link rel="stylesheet" href="/css/tokens.css">
+    <link rel="stylesheet" href="/css/base.css">
+    <link rel="stylesheet" href="/css/components.css">
+    <link rel="stylesheet" href="/css/inline-utils.css">
+    <link rel="stylesheet" href="/css/portal-admin.css">
+
+    <!-- Flash-free theme initialization -->
+    <script type="module" src="/js/core/theme.js"></script>
+</head>
+<body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <div class="app-shell">
+        <aside class="app-sidebar" id="admin-sidebar"></aside>
+
+        <div class="app-main">
+            <header class="app-topbar" id="admin-topbar"></header>
+
+            <main class="content-body" id="main-content">
+                <!-- Page Title -->
+                <div class="page-title-row">
+                    <div>
+                        <div class="page-title-inner">
+                            <h1>Facility Session History</h1>
+                            <span class="dsa-badge">Parking History · Bounded Deque &amp; Audit Trail · O(1) Push/Pop</span>
+                        </div>
+                        <p class="text-muted p-muted-reset">
+                            Comprehensive record of all active and completed parking sessions with unmasked vehicle and driver details.
+                        </p>
+                    </div>
+
+                    <button type="button" id="refresh-history-btn" class="btn btn-secondary btn-sm">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                        <span>Refresh Log</span>
+                    </button>
+                </div>
+
+                <!-- Recent Exits Strip (ParkingHistoryStack · Bounded Deque LIFO) -->
+                <section class="section-mb6" aria-labelledby="recent-exits-heading">
+                    <div class="section-row section-row-mb2">
+                        <h3 id="recent-exits-heading" class="section-h3-sm">Recent Exits (Stack LIFO)</h3>
+                        <span class="dsa-badge">ParkingHistoryStack · ArrayDeque · O(1) LIFO</span>
+                    </div>
+
+                    <div id="recent-exits-container" class="recent-exits-strip">
+                        <div class="text-muted loading-xs">Loading recent exits...</div>
+                    </div>
+                </section>
+
+                <!-- Search & Filter Toolbar -->
+                <div class="toolbar-surface-row">
+                    <div class="toolbar-filters">
+                        <input type="text" id="history-search-input" class="form-input toolbar-search" placeholder="Search plate, slot, or owner name...">
+                        
+                        <select id="history-status-filter" class="form-select" aria-label="Filter by Session Status">
+                            <option value="">All Sessions</option>
+                            <option value="ACTIVE">Active (Parked)</option>
+                            <option value="COMPLETED">Completed (Departed)</option>
+                        </select>
+                    </div>
+
+                    <div id="history-count-badge" class="dsa-badge">
+                        Showing 0 sessions
+                    </div>
+                </div>
+
+                <!-- History Table Container -->
+                <div id="history-table-container">
+                    <div class="text-muted loading-pad">Loading session records...</div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Page Script -->
+    <script type="module">
+        import { setupAdminShell } from '/js/admin/admin-shell.js';
+        import { api } from '/js/core/api.js';
+        import { DataTable } from '/js/core/table.js';
+        import { formatPlate, formatDuration, formatDateTime, escapeHtml } from '/js/core/format.js';
+
+        let sessionsData = [];
+        let dataTable = null;
+
+        async function init() {
+            await setupAdminShell('history');
+            setupFilters();
+            await Promise.all([loadRecentExits(), loadHistory()]);
+        }
+
+        async function loadRecentExits() {
+            try {
+                const exits = await api.get('/api/admin/parking/recent-exits');
+                const container = document.getElementById('recent-exits-container');
+                if (!container) return;
+
+                if (!exits || exits.length === 0) {
+                    container.innerHTML = `<div class="text-muted empty-strip-text">No departures recorded yet today.</div>`;
+                    return;
+                }
+
+                container.innerHTML = exits.slice(0, 8).map(exit => `
+                    <div class="exit-chip">
+                        <span class="plate-tag plate-chip-sm">${escapeHtml(formatPlate(exit.vehicleNumber))}</span>
+                        <span class="text-muted-color">Slot ${escapeHtml(exit.slotNumber)}</span>
+                        <span class="dsa-badge text-2xs">${escapeHtml(formatDuration(exit.durationSeconds))}</span>
+                    </div>
+                `).join('');
+            } catch (err) {
+                console.error('Failed to load recent exits', err);
+            }
+        }
+
+        async function loadHistory() {
+            try {
+                sessionsData = await api.get('/api/admin/parking/history');
+                renderTable();
+            } catch (err) {
+                console.error('Failed to load session history', err);
+            }
+        }
+
+        function getFilteredSessions() {
+            const query = (document.getElementById('history-search-input').value || '').trim().toLowerCase();
+            const statusFilter = document.getElementById('history-status-filter').value;
+
+            return sessionsData.filter(s => {
+                if (statusFilter && s.status !== statusFilter) return false;
+                if (query) {
+                    const matchPlate = s.vehicleNumber && s.vehicleNumber.toLowerCase().includes(query);
+                    const matchSlot = s.slotNumber && s.slotNumber.toLowerCase().includes(query);
+                    const matchOwner = s.ownerName && s.ownerName.toLowerCase().includes(query);
+                    if (!matchPlate && !matchSlot && !matchOwner) return false;
+                }
+                return true;
+            });
+        }
+
+        function renderTable() {
+            const container = document.getElementById('history-table-container');
+            if (!container) return;
+
+            const filtered = getFilteredSessions();
+            document.getElementById('history-count-badge').textContent = `Showing ${filtered.length} of ${sessionsData.length} records`;
+
+            if (!dataTable) {
+                dataTable = new DataTable({
+                    container,
+                    caption: 'Super Admin Facility Session Ledger',
+                    dsaAnnotation: 'Parking History · Bounded Deque & Audit Trail · O(1) Push/Pop',
+                    emptyMessage: 'No matching parking sessions recorded.',
+                    columns: [
+                        {
+                            key: 'id',
+                            label: 'Session ID',
+                            sortable: true,
+                            render: (val) => `<span class="font-mono text-muted">#${val}</span>`
+                        },
+                        {
+                            key: 'vehicleNumber',
+                            label: 'Vehicle Plate',
+                            sortable: true,
+                            render: (val) => `<span class="plate-tag plate-tag-md">${escapeHtml(formatPlate(val))}</span>`
+                        },
+                        {
+                            key: 'vehicleType',
+                            label: 'Type',
+                            sortable: true,
+                            render: (val) => `<span class="slot-type-badge ${escapeHtml(val || 'CAR')}">${escapeHtml(val || 'CAR')}</span>`
+                        },
+                        {
+                            key: 'ownerName',
+                            label: 'Owner Name',
+                            sortable: true,
+                            render: (val) => escapeHtml(val || '—')
+                        },
+                        {
+                            key: 'slotNumber',
+                            label: 'Bay #',
+                            sortable: true,
+                            render: (val) => `<span class="font-mono font-bold">${escapeHtml(val || '—')}</span>`
+                        },
+                        {
+                            key: 'status',
+                            label: 'Status',
+                            sortable: true,
+                            render: (val) => {
+                                const isAct = val === 'ACTIVE';
+                                return `
+                                    <span class="status-chip ${isAct ? 'OCCUPIED' : 'AVAILABLE'}">
+                                        <span class="status-dot"></span>
+                                        <span>${isAct ? 'PARKED' : 'DEPARTED'}</span>
+                                    </span>
+                                `;
+                            }
+                        },
+                        {
+                            key: 'entryTime',
+                            label: 'Entry Time',
+                            sortable: true,
+                            render: (val) => `<span class="text-xs-regular">${formatDateTime(val)}</span>`
+                        },
+                        {
+                            key: 'exitTime',
+                            label: 'Exit Time',
+                            sortable: true,
+                            render: (val) => `<span class="text-xs-regular">${formatDateTime(val)}</span>`
+                        },
+                        {
+                            key: 'durationSeconds',
+                            label: 'Duration',
+                            sortable: true,
+                            render: (val, row) => {
+                                if (row.status === 'ACTIVE') {
+                                    const dur = Math.max(0, Math.floor((Date.now() - new Date(row.entryTime).getTime()) / 1000));
+                                    return `<span class="dsa-badge text-st-available">⏱️ ${formatDuration(dur)} (Active)</span>`;
+                                }
+                                return `<span class="font-mono">${formatDuration(val)}</span>`;
+                            }
+                        },
+                        {
+                            key: 'actions',
+                            label: 'Action',
+                            render: (_, row) => row.status === 'ACTIVE'
+                                ? `<button type="button" class="btn btn-secondary btn-sm" onclick="window.openExitModal('${escapeHtml(row.vehicleNumber)}', () => window.location.reload())">Exit</button>`
+                                : '—'
+                        }
+                    ]
+                });
+            }
+
+            dataTable.setData(filtered);
+        }
+
+        function setupFilters() {
+            document.getElementById('history-search-input').addEventListener('input', () => renderTable());
+            document.getElementById('history-status-filter').addEventListener('change', () => renderTable());
+            document.getElementById('refresh-history-btn').addEventListener('click', () => {
+                loadRecentExits();
+                loadHistory();
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>

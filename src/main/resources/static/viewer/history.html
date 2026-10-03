@@ -1,0 +1,216 @@
+﻿<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Public session history ledger with strict zero-PII privacy protection and masked license telemetry.">
+    <meta name="color-scheme" content="light dark">
+    <title>Public Session History â€” Smart Parking Allocation System</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+    
+    <link rel="stylesheet" href="/css/tokens.css">
+    <link rel="stylesheet" href="/css/base.css">
+    <link rel="stylesheet" href="/css/components.css">
+    <link rel="stylesheet" href="/css/inline-utils.css">
+    <link rel="stylesheet" href="/css/portal-viewer.css">
+
+    <!-- Flash-free theme initialization -->
+    <script type="module" src="/js/core/theme.js"></script>
+</head>
+<body>
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <div class="app-shell">
+        <aside class="app-sidebar" id="viewer-sidebar"></aside>
+
+        <div class="app-main">
+            <header class="app-topbar" id="viewer-topbar"></header>
+
+            <main class="content-body" id="main-content">
+                <!-- Page Title -->
+                <div class="page-title-row">
+                    <div>
+                        <div class="page-title-inner">
+                            <h1>Public Parking History</h1>
+                            <span class="dsa-badge">Parking History Â· Bounded Deque &amp; Audit Trail Â· O(1) Push/Pop</span>
+                        </div>
+                        <p class="text-muted p-muted-reset">
+                            Public audit ledger of parking sessions. All license plates are redacted and driver identities are omitted.
+                        </p>
+                    </div>
+
+                    <button type="button" id="refresh-history-btn" class="btn btn-secondary btn-sm">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"></polyline><polyline points="1 20 1 14 7 14"></polyline><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"></path></svg>
+                        <span>Refresh Log</span>
+                    </button>
+                </div>
+
+                <!-- Privacy & Redaction Banner -->
+                <div class="readonly-banner">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="flex-no-shrink"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path></svg>
+                    <div>
+                        <strong>Masked Plate Standard:</strong>
+                        In compliance with data protection policies, vehicle plates are formatted as <code>PB10â€¢â€¢â€¢â€¢34</code> (preserving prefix and suffix while concealing internal digits).
+                    </div>
+                </div>
+
+                <!-- Search & Filter Toolbar -->
+                <div class="toolbar-surface-row">
+                    <div class="toolbar-filters">
+                        <input type="text" id="history-search-input" class="form-input toolbar-search" placeholder="Search bays or vehicle plates...">
+                        
+                        <select id="history-status-filter" class="form-select" aria-label="Filter by Session Status">
+                            <option value="">All Sessions</option>
+                            <option value="ACTIVE">Active (Parked)</option>
+                            <option value="COMPLETED">Completed (Departed)</option>
+                        </select>
+                    </div>
+
+                    <div id="history-count-badge" class="dsa-badge">
+                        Showing 0 sessions
+                    </div>
+                </div>
+
+                <!-- History Table Container -->
+                <div id="history-table-container">
+                    <div class="text-muted loading-pad">Loading session records...</div>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <!-- Page Script -->
+    <script type="module">
+        import { setupViewerShell } from '/js/viewer/viewer-shell.js';
+        import { api } from '/js/core/api.js';
+        import { DataTable } from '/js/core/table.js';
+        import { formatDuration, formatDateTime, escapeHtml } from '/js/core/format.js';
+
+        let sessionsData = [];
+        let dataTable = null;
+
+        async function init() {
+            await setupViewerShell('history');
+            setupFilters();
+            await loadHistory();
+        }
+
+        async function loadHistory() {
+            try {
+                sessionsData = await api.get('/api/viewer/parking/history');
+                renderTable();
+            } catch (err) {
+                console.error('Failed to load session history', err);
+            }
+        }
+
+        function getFilteredSessions() {
+            const query = (document.getElementById('history-search-input').value || '').trim().toLowerCase();
+            const statusFilter = document.getElementById('history-status-filter').value;
+
+            return sessionsData.filter(s => {
+                if (statusFilter && s.status !== statusFilter) return false;
+                if (query) {
+                    const matchPlate = s.vehicleNumber && s.vehicleNumber.toLowerCase().includes(query);
+                    const matchSlot = s.slotNumber && s.slotNumber.toLowerCase().includes(query);
+                    if (!matchPlate && !matchSlot) return false;
+                }
+                return true;
+            });
+        }
+
+        function renderTable() {
+            const container = document.getElementById('history-table-container');
+            if (!container) return;
+
+            const filtered = getFilteredSessions();
+            document.getElementById('history-count-badge').textContent = `Showing ${filtered.length} of ${sessionsData.length} records`;
+
+            if (!dataTable) {
+                dataTable = new DataTable({
+                    container,
+                    caption: 'Public Facility Session Ledger (Redacted)',
+                    dsaAnnotation: 'Parking History Â· Bounded Deque & Audit Trail Â· O(1) Push/Pop',
+                    emptyMessage: 'No matching parking sessions recorded.',
+                    columns: [
+                        {
+                            key: 'id',
+                            label: 'Session ID',
+                            sortable: true,
+                            render: (val) => `<span class="font-mono text-muted">#${val}</span>`
+                        },
+                        {
+                            key: 'vehicleNumber',
+                            label: 'Vehicle Plate (Masked)',
+                            sortable: true,
+                            render: (val) => `<span class="plate-tag plate-tag-md">${escapeHtml(val)}</span>`
+                        },
+                        {
+                            key: 'vehicleType',
+                            label: 'Type',
+                            sortable: true,
+                            render: (val) => `<span class="slot-type-badge ${escapeHtml(val || 'CAR')}">${escapeHtml(val || 'CAR')}</span>`
+                        },
+                        {
+                            key: 'slotNumber',
+                            label: 'Bay #',
+                            sortable: true,
+                            render: (val) => `<span class="font-mono font-bold">${escapeHtml(val || 'â€”')}</span>`
+                        },
+                        {
+                            key: 'status',
+                            label: 'Status',
+                            sortable: true,
+                            render: (val) => {
+                                const isAct = val === 'ACTIVE';
+                                return `
+                                    <span class="status-chip ${isAct ? 'OCCUPIED' : 'AVAILABLE'}">
+                                        <span class="status-dot"></span>
+                                        <span>${isAct ? 'PARKED' : 'DEPARTED'}</span>
+                                    </span>
+                                `;
+                            }
+                        },
+                        {
+                            key: 'entryTime',
+                            label: 'Entry Time',
+                            sortable: true,
+                            render: (val) => `<span class="text-xs-regular">${formatDateTime(val)}</span>`
+                        },
+                        {
+                            key: 'exitTime',
+                            label: 'Exit Time',
+                            sortable: true,
+                            render: (val) => `<span class="text-xs-regular">${formatDateTime(val)}</span>`
+                        },
+                        {
+                            key: 'durationSeconds',
+                            label: 'Duration',
+                            sortable: true,
+                            render: (val, row) => {
+                                if (row.status === 'ACTIVE') {
+                                    const dur = Math.max(0, Math.floor((Date.now() - new Date(row.entryTime).getTime()) / 1000));
+                                    return `<span class="dsa-badge text-st-available">â±ï¸ ${formatDuration(dur)} (Active)</span>`;
+                                }
+                                return `<span class="font-mono">${formatDuration(val)}</span>`;
+                            }
+                        }
+                    ]
+                });
+            }
+
+            dataTable.setData(filtered);
+        }
+
+        function setupFilters() {
+            document.getElementById('history-search-input').addEventListener('input', () => renderTable());
+            document.getElementById('history-status-filter').addEventListener('change', () => renderTable());
+            document.getElementById('refresh-history-btn').addEventListener('click', loadHistory);
+        }
+
+        init();
+    </script>
+    <script type="module" src="/js/core/cookie-banner.js"></script>
+</body>
+</html>
+
